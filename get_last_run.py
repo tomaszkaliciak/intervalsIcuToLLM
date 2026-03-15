@@ -18,7 +18,7 @@ def get_credentials():
     api_key = args.api_key or os.environ.get('INTERVALS_API_KEY')
 
     if not athlete_id or not api_key:
-        print("❌ ERROR: Missing credentials!")
+        print("ERROR: Missing credentials!")
         print("Set environment variables INTERVALS_ATHLETE_ID and INTERVALS_API_KEY")
         print("or use parameters: python script.py --athlete-id i12345 --api-key YOUR_KEY")
         sys.exit(1)
@@ -36,9 +36,8 @@ def format_time(seconds):
     return str(datetime.timedelta(seconds=int(seconds)))
 
 def get_latest_run(athlete_id, api_key):
-    url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/activities"
+    url_activities = f"https://intervals.icu/api/v1/athlete/{athlete_id}/activities"
     
-    # Intervals API strictly requires 'oldest' and 'newest' date parameters
     now = datetime.date.today()
     oldest = (now - datetime.timedelta(days=90)).isoformat()
     newest = (now + datetime.timedelta(days=1)).isoformat()
@@ -48,35 +47,32 @@ def get_latest_run(athlete_id, api_key):
         'newest': newest
     } 
     
-    response = requests.get(url, auth=('API_KEY', api_key), params=params)
+    response = requests.get(url_activities, auth=('API_KEY', api_key), params=params)
     
-    # Friendly error if authentication fails
     if response.status_code in (401, 403):
-        print("❌ ERROR: Access Denied. Check your API key and Athlete ID.")
+        print("ERROR: Access Denied. Check your API key and Athlete ID.")
         sys.exit(1)
         
     response.raise_for_status()
-        
     activities = response.json()
     
     if not activities:
         print(f"No activities found on the account between {oldest} and {newest}.")
         return
 
-    # Sort activities by date descending (newest first) to be absolutely sure
     activities.sort(key=lambda x: x.get('start_date_local', ''), reverse=True)
-    
-    # Find the first activity that is a run
     run_activity = next((act for act in activities if act.get('type') == 'Run'), None)
 
     if not run_activity:
-        print("❌ No run found in the last 90 days.")
+        print("No run found in the last 90 days.")
         return
     
+    activity_id = run_activity.get('id')
     name = run_activity.get('name', 'No name')
     date_str = run_activity.get('start_date_local', '')[:10]
     distance_km = run_activity.get('distance', 0) / 1000
     moving_time_s = run_activity.get('moving_time', 0)
+    elevation_gain = run_activity.get('total_elevation_gain', 0)
     avg_pace_ms = run_activity.get('average_speed', 0)
     
     avg_hr = run_activity.get('average_heartrate', 0)
@@ -87,6 +83,7 @@ def get_latest_run(athlete_id, api_key):
 
     print(f"*   **Workout:** {name} ({date_str})")
     print(f"*   **Time & Distance:** ({format_time(moving_time_s)}, {distance_km:.2f} km)")
+    print(f"*   **Elevation Gain:** {elevation_gain:.0f} m")
     print(f"*   **Average Pace:** ({format_pace(avg_pace_ms)}/km)")
     print(f"*   **Average HR / Max:** {avg_hr:.0f}/{max_hr:.0f}")
     print(f"*   **Average Cadence:** {avg_cadence:.0f} spm")
@@ -94,8 +91,27 @@ def get_latest_run(athlete_id, api_key):
     print(f"*   **Comment:** {description}")
     print("")
 
+    url_activity_details = f"https://intervals.icu/api/v1/activity/{activity_id}"
+    details_response = requests.get(url_activity_details, auth=('API_KEY', api_key))
+    
+    if details_response.status_code == 200:
+        details = details_response.json()
+        laps = details.get('laps',[])
+        
+        if laps:
+            print("--- Laps (Splits) ---")
+            for i, lap in enumerate(laps):
+                lap_dist = lap.get('distance', 0) / 1000
+                lap_time = lap.get('moving_time', 0)
+                lap_pace = format_pace(lap.get('average_speed', 0))
+                lap_hr = lap.get('average_heartrate', 0)
+                
+                print(f"Lap {i+1:>2}: {lap_dist:>5.2f} km | {format_time(lap_time):>7} | {lap_pace:>5}/km | HR: {lap_hr:>3.0f}")
+            print("")
+
     zones = run_activity.get('icu_pace_zones',[])
     if zones:
+        print("--- Pace Zones ---")
         total_zone_time = sum(zones)
         zone_names =[
             "Recovery", 
